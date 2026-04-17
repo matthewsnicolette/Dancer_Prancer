@@ -21,6 +21,7 @@ Create a virtual environment, install the requirements, and run:
 ```bash
 pip install -r requirements.txt
 python runfile.py
+```
 
 ## Streamlit
 
