@@ -1,0 +1,12 @@
+
+`.gitignore`
+
+If the repo is private and you are happy to keep the Excel files there, use:
+
+```gitignore
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.DS_Store
