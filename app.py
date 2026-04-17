@@ -39,6 +39,7 @@ def extract_degree_level(programme_value):
         return "M Agric"
     if "masters" in text or "master" in text:
         return "Master's"
+
     return "Other"
 
 
@@ -50,6 +51,7 @@ def clean_completion_year(series: pd.Series) -> pd.Series:
 
 def clean_completion_date_or_year(series: pd.Series) -> pd.Series:
     parsed_dates = pd.to_datetime(series, errors="coerce")
+
     if parsed_dates.notna().sum() > 0:
         years = parsed_dates.dt.year
         years = years.mask(years == 2000, pd.NA)
@@ -89,6 +91,14 @@ def safe_value_counts(df: pd.DataFrame, col: str, dropna_label: str = "Unknown")
     out = temp[col].value_counts().reset_index()
     out.columns = [col, "Count"]
     return out
+
+
+def find_matching_column(df: pd.DataFrame, possibilities):
+    lower_map = {c.lower(): c for c in df.columns}
+    for item in possibilities:
+        if item.lower() in lower_map:
+            return lower_map[item.lower()]
+    return None
 
 
 def prepare_dataframes(data_dict):
@@ -146,6 +156,19 @@ def load_all_data(preprocess_file, registered_file, graduated_file, supervisor_f
 
 
 # =========================================================
+# DEGREE COLOURS
+# =========================================================
+DEGREE_COLOR_MAP = {
+    "PhD": "#1f77b4",
+    "MSc": "#ff7f0e",
+    "M Agric": "#2ca02c",
+    "Master's": "#d62728",
+    "Other": "#9467bd",
+    "Unknown": "#7f7f7f",
+}
+
+
+# =========================================================
 # TITLE
 # =========================================================
 st.title("Postgraduate Student Dashboard")
@@ -191,7 +214,6 @@ with col2:
         help="Upload external_examiner_report.xlsx"
     )
 
-
 all_files_uploaded = all([
     preprocess_file,
     registered_file,
@@ -203,7 +225,6 @@ all_files_uploaded = all([
 if not all_files_uploaded:
     st.info("Please choose or drag and drop all five Excel files to continue.")
     st.stop()
-
 
 data_raw = load_all_data(
     preprocess_file,
@@ -219,40 +240,274 @@ st.success("All files uploaded successfully.")
 
 
 # =========================================================
-# SIMPLE OVERVIEW
+# OPTIONAL GLOBAL FILTERS
+# =========================================================
+st.sidebar.subheader("Filters")
+
+programme_options = sorted(
+    set(preprocess.get("Programme", pd.Series(dtype=object)).dropna().tolist())
+    | set(registered.get("Programme", pd.Series(dtype=object)).dropna().tolist())
+    | set(graduated.get("Programme", pd.Series(dtype=object)).dropna().tolist())
+)
+
+degree_options = sorted(
+    set(preprocess.get("Degree Level", pd.Series(dtype=object)).dropna().tolist())
+    | set(registered.get("Degree Level", pd.Series(dtype=object)).dropna().tolist())
+    | set(graduated.get("Degree Level", pd.Series(dtype=object)).dropna().tolist())
+)
+
+selected_programmes = st.sidebar.multiselect("Programme", programme_options, default=[])
+selected_degrees = st.sidebar.multiselect("Degree Level", degree_options, default=[])
+
+
+def apply_filters(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    if selected_programmes and "Programme" in out.columns:
+        out = out[out["Programme"].isin(selected_programmes)]
+
+    if selected_degrees and "Degree Level" in out.columns:
+        out = out[out["Degree Level"].isin(selected_degrees)]
+
+    return out
+
+
+preprocess_f = apply_filters(preprocess)
+registered_f = apply_filters(registered)
+graduated_f = apply_filters(graduated)
+supervisor_students_f = apply_filters(supervisor_students)
+examiner_detail_f = apply_filters(examiner_detail)
+
+
+# =========================================================
+# FIND IMPORTANT COLUMN NAMES
+# =========================================================
+workflow_col = find_matching_column(
+    preprocess_f,
+    ["Workflow Decision Status", "Workflow Status", "Status", "Decision Status"]
+)
+
+assigned_supervisor_col = find_matching_column(
+    preprocess_f,
+    ["Assigned Supervisor", "Supervisor", "Allocated Supervisor"]
+)
+
+examiner_name_col = find_matching_column(
+    examiner_detail_f,
+    ["External Examiner", "Examiner", "External Examiner Name"]
+)
+
+
+# =========================================================
+# TABS
 # =========================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["Overview", "Pre-process", "Graduated", "Supervisors", "External Examiners"]
 )
 
-with tab1:
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Pre-process", len(preprocess))
-    c2.metric("Registered", len(registered))
-    c3.metric("Graduated", len(graduated))
 
-    if "Completion Year" in graduated.columns:
-        grad_year = (
-            graduated["Completion Year"]
-            .dropna()
-            .astype(int)
-            .value_counts()
-            .sort_index()
-            .reset_index()
-        )
-        if not grad_year.empty:
-            grad_year.columns = ["Completion Year", "Count"]
-            fig = px.bar(grad_year, x="Completion Year", y="Count", title="Graduations by Year")
+# =========================================================
+# OVERVIEW
+# =========================================================
+with tab1:
+    st.subheader("Overview")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Pre-process", len(preprocess_f))
+    c2.metric("Registered", len(registered_f))
+    c3.metric("Graduated", len(graduated_f))
+
+    if "Completion Year" in graduated_f.columns:
+        overview_grad = graduated_f.dropna(subset=["Completion Year"]).copy()
+        if not overview_grad.empty:
+            overview_grad["Completion Year"] = overview_grad["Completion Year"].astype(int)
+
+            overview_year = (
+                overview_grad.groupby("Completion Year")
+                .size()
+                .reset_index(name="Students")
+                .sort_values("Completion Year")
+            )
+
+            fig = px.bar(
+                overview_year,
+                x="Completion Year",
+                y="Students",
+                title="Number of Students Graduated by Year"
+            )
+            fig.update_xaxes(type="category")
             st.plotly_chart(fig, use_container_width=True)
 
+
+# =========================================================
+# PRE-PROCESS
+# =========================================================
 with tab2:
-    st.dataframe(preprocess, use_container_width=True)
+    st.subheader("Pre-process")
 
+    left, right = st.columns(2)
+
+    with left:
+        if workflow_col and "Degree Level" in preprocess_f.columns:
+            pp_degree_workflow = (
+                preprocess_f.groupby(["Degree Level", workflow_col])
+                .size()
+                .reset_index(name="Students")
+            )
+
+            fig = px.bar(
+                pp_degree_workflow,
+                x="Degree Level",
+                y="Students",
+                color=workflow_col,
+                barmode="group",
+                title="Pre-process Students by Degree and Workflow Status"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    with right:
+        if workflow_col and assigned_supervisor_col and "Degree Level" in preprocess_f.columns:
+            pp_supervisor = preprocess_f.dropna(subset=[workflow_col]).copy()
+
+            if not pp_supervisor.empty:
+                pp_supervisor[assigned_supervisor_col] = pp_supervisor[assigned_supervisor_col].fillna("Unassigned")
+
+                pp_sup_degree = (
+                    pp_supervisor.groupby([assigned_supervisor_col, "Degree Level"])
+                    .size()
+                    .reset_index(name="Students")
+                )
+
+                fig = px.bar(
+                    pp_sup_degree,
+                    x=assigned_supervisor_col,
+                    y="Students",
+                    color="Degree Level",
+                    color_discrete_map=DEGREE_COLOR_MAP,
+                    barmode="stack",
+                    title="Allocated Supervisors by Degree"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Pre-process Student Table")
+    st.dataframe(preprocess_f, use_container_width=True)
+
+
+# =========================================================
+# GRADUATED
+# =========================================================
 with tab3:
-    st.dataframe(graduated, use_container_width=True)
+    st.subheader("Graduated")
 
+    if "Completion Year" in graduated_f.columns and "Degree Level" in graduated_f.columns:
+        grad_chart = graduated_f.dropna(subset=["Completion Year"]).copy()
+
+        if not grad_chart.empty:
+            grad_chart["Completion Year"] = grad_chart["Completion Year"].astype(int)
+
+            grad_by_year_degree = (
+                grad_chart.groupby(["Completion Year", "Degree Level"])
+                .size()
+                .reset_index(name="Students")
+                .sort_values("Completion Year")
+            )
+
+            fig = px.bar(
+                grad_by_year_degree,
+                x="Completion Year",
+                y="Students",
+                color="Degree Level",
+                color_discrete_map=DEGREE_COLOR_MAP,
+                barmode="stack",
+                title="Graduated Students by Year and Degree"
+            )
+            fig.update_xaxes(type="category")
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Graduated Student Table")
+    st.dataframe(graduated_f, use_container_width=True)
+
+
+# =========================================================
+# SUPERVISORS
+# =========================================================
 with tab4:
-    st.dataframe(supervisor_students, use_container_width=True)
+    st.subheader("Supervisors")
 
+    if "Supervisor" in supervisor_students_f.columns and "Degree Level" in supervisor_students_f.columns:
+        supervisor_chart = (
+            supervisor_students_f.groupby(["Supervisor", "Degree Level"])
+            .size()
+            .reset_index(name="Students")
+        )
+
+        fig = px.bar(
+            supervisor_chart,
+            x="Supervisor",
+            y="Students",
+            color="Degree Level",
+            color_discrete_map=DEGREE_COLOR_MAP,
+            barmode="stack",
+            title="Students per Supervisor by Degree"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Supervisor Detail")
+    st.dataframe(supervisor_students_f, use_container_width=True)
+
+
+# =========================================================
+# EXTERNAL EXAMINERS
+# =========================================================
 with tab5:
-    st.dataframe(examiner_detail, use_container_width=True)
+    st.subheader("External Examiners")
+
+    if examiner_name_col and "Student Stage" in examiner_detail_f.columns and "Degree Level" in examiner_detail_f.columns:
+        ex_stage = examiner_detail_f.copy()
+        ex_stage["Student Stage"] = ex_stage["Student Stage"].astype(str).str.strip().str.lower()
+
+        ex_graduated = ex_stage[ex_stage["Student Stage"] == "graduated"].copy()
+        ex_registered = ex_stage[ex_stage["Student Stage"] == "registered"].copy()
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if not ex_graduated.empty:
+                ex_grad_chart = (
+                    ex_graduated.groupby([examiner_name_col, "Degree Level"])
+                    .size()
+                    .reset_index(name="Students")
+                )
+
+                fig = px.bar(
+                    ex_grad_chart,
+                    x=examiner_name_col,
+                    y="Students",
+                    color="Degree Level",
+                    color_discrete_map=DEGREE_COLOR_MAP,
+                    barmode="stack",
+                    title="Graduated Students per External Examiner by Degree"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            if not ex_registered.empty:
+                ex_reg_chart = (
+                    ex_registered.groupby([examiner_name_col, "Degree Level"])
+                    .size()
+                    .reset_index(name="Students")
+                )
+
+                fig = px.bar(
+                    ex_reg_chart,
+                    x=examiner_name_col,
+                    y="Students",
+                    color="Degree Level",
+                    color_discrete_map=DEGREE_COLOR_MAP,
+                    barmode="stack",
+                    title="Registered Students per External Examiner by Degree"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### External Examiner Detail")
+    st.dataframe(examiner_detail_f, use_container_width=True)
