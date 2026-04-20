@@ -1,4 +1,5 @@
 import math
+import textwrap
 from io import BytesIO
 
 import numpy as np
@@ -139,28 +140,48 @@ def load_all_data(preprocess_file, registered_file, graduated_file, supervisor_f
 
 
 def figure_to_rl_image(fig, width=9.8 * inch, height=5.3 * inch):
-    img_bytes = fig.to_image(format="png", scale=2)
-    img_buffer = BytesIO(img_bytes)
-    pil_img = Image.open(img_buffer)
-    img_width, img_height = pil_img.size
-    aspect = img_height / img_width
-    final_height = width * aspect
-    if final_height > height:
-        final_height = height
-        width = final_height / aspect
-    img_buffer.seek(0)
-    return RLImage(img_buffer, width=width, height=final_height)
+    """
+    Try to convert a Plotly figure to an image for PDF embedding.
+    If Kaleido/Chrome is unavailable on Streamlit Cloud, return None.
+    """
+    try:
+        img_bytes = fig.to_image(format="png", scale=2)
+        img_buffer = BytesIO(img_bytes)
+        pil_img = Image.open(img_buffer)
+        img_width, img_height = pil_img.size
+        aspect = img_height / img_width
+        final_height = width * aspect
+
+        if final_height > height:
+            final_height = height
+            width = final_height / aspect
+
+        img_buffer.seek(0)
+        return RLImage(img_buffer, width=width, height=final_height)
+
+    except Exception:
+        return None
 
 
-def dataframe_preview_table(df, max_rows=15):
+def dataframe_preview_table(df, max_rows=15, max_cols=8, max_cell_len=28):
     if df is None or df.empty:
         return [["No data available"]]
 
     preview = df.head(max_rows).copy()
+
+    # Limit very wide tables
+    if preview.shape[1] > max_cols:
+        preview = preview.iloc[:, :max_cols].copy()
+
     preview = preview.fillna("")
-    preview.columns = [str(c) for c in preview.columns]
-    data = [preview.columns.tolist()] + preview.astype(str).values.tolist()
-    return data
+    preview.columns = [textwrap.shorten(str(c), width=max_cell_len, placeholder="...") for c in preview.columns]
+
+    for col in preview.columns:
+        preview[col] = preview[col].astype(str).apply(
+            lambda x: textwrap.shorten(x, width=max_cell_len, placeholder="...")
+        )
+
+    return [preview.columns.tolist()] + preview.values.tolist()
 
 
 def styled_report_table(df, col_widths=None):
@@ -188,7 +209,20 @@ def styled_report_table(df, col_widths=None):
 def add_chart(story, title, fig, styles):
     story.append(Paragraph(title, styles["Heading2"]))
     story.append(Spacer(1, 0.12 * inch))
-    story.append(figure_to_rl_image(fig))
+
+    chart_img = figure_to_rl_image(fig)
+
+    if chart_img is not None:
+        story.append(chart_img)
+    else:
+        story.append(
+            Paragraph(
+                "Chart image could not be embedded in this PDF in the current deployment environment. "
+                "The interactive chart is still available in the Streamlit app.",
+                styles["SmallNote"],
+            )
+        )
+
     story.append(Spacer(1, 0.25 * inch))
 
 
@@ -609,24 +643,31 @@ examiner_name_col = find_matching_column(
 # =========================================================
 # PDF DOWNLOAD
 # =========================================================
-pdf_bytes = build_pdf_report(
-    preprocess_f=preprocess_f,
-    registered_f=registered_f,
-    graduated_f=graduated_f,
-    supervisor_students_f=supervisor_students_f,
-    examiner_detail_f=examiner_detail_f,
-    workflow_col=workflow_col,
-    assigned_supervisor_col=assigned_supervisor_col,
-    examiner_name_col=examiner_name_col,
-    programme_color_map=PROGRAMME_COLOR_MAP,
-)
+try:
+    pdf_bytes = build_pdf_report(
+        preprocess_f=preprocess_f,
+        registered_f=registered_f,
+        graduated_f=graduated_f,
+        supervisor_students_f=supervisor_students_f,
+        examiner_detail_f=examiner_detail_f,
+        workflow_col=workflow_col,
+        assigned_supervisor_col=assigned_supervisor_col,
+        examiner_name_col=examiner_name_col,
+        programme_color_map=PROGRAMME_COLOR_MAP,
+    )
 
-st.download_button(
-    label="Download PDF report",
-    data=pdf_bytes,
-    file_name="student_dashboard_report.pdf",
-    mime="application/pdf",
-)
+    st.download_button(
+        label="Download PDF report",
+        data=pdf_bytes,
+        file_name="student_dashboard_report.pdf",
+        mime="application/pdf",
+    )
+
+except Exception:
+    st.warning(
+        "The PDF report could not include chart images in this deployment environment. "
+        "The interactive charts in the app still work correctly."
+    )
 
 
 # =========================================================
