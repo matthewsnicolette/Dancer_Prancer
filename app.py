@@ -808,7 +808,7 @@ with tab3:
 # =========================================================
 # GRADUATED
 # =========================================================
-with tab3:
+with tab4:
     st.subheader("Graduated")
 
     if "Completion Year" in graduated_f.columns and "Programme" in graduated_f.columns:
@@ -840,7 +840,7 @@ with tab3:
 # =========================================================
 # SUPERVISORS
 # =========================================================
-with tab4:
+with tab5:
     st.subheader("Supervisors")
 
     if "Supervisor" in supervisor_students_f.columns and "Programme" in supervisor_students_f.columns:
@@ -908,7 +908,7 @@ with tab4:
 # =========================================================
 # EXTERNAL EXAMINERS
 # =========================================================
-with tab5:
+with tab6:
     st.subheader("External Examiners")
 
     if examiner_name_col and "Student Stage" in examiner_detail_f.columns and "Programme" in examiner_detail_f.columns:
