@@ -673,8 +673,8 @@ except Exception:
 # =========================================================
 # TABS
 # =========================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["Overview", "Pre-process", "Graduated", "Supervisors", "External Examiners"]
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    ["Overview", "Pre-process", "Registered", "Graduated", "Supervisors", "External Examiners"]
 )
 
 
@@ -753,6 +753,56 @@ with tab2:
 
     st.markdown("### Pre-process Student Table")
     st.dataframe(preprocess_f, use_container_width=True)
+
+
+# =========================================================
+# REGISTERED
+# =========================================================
+with tab3:
+    st.subheader("Registered")
+
+    if "Programme" in registered_f.columns:
+        reg_programme = (
+            registered_f.groupby("Programme")
+            .size()
+            .reset_index(name="Students")
+            .sort_values("Students", ascending=False)
+        )
+
+        fig = px.bar(
+            reg_programme,
+            x="Programme",
+            y="Students",
+            color="Programme",
+            color_discrete_map=PROGRAMME_COLOR_MAP,
+            title="Registered Students by Programme"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    workflow_registered_col = find_matching_column(
+        registered_f,
+        ["Workflow Decision Status", "Workflow Status", "Workflow State", "Status", "Decision Status"]
+    )
+
+    if workflow_registered_col and "Programme" in registered_f.columns:
+        reg_workflow = (
+            registered_f.groupby(["Programme", workflow_registered_col])
+            .size()
+            .reset_index(name="Students")
+        )
+
+        fig = px.bar(
+            reg_workflow,
+            x="Programme",
+            y="Students",
+            color=workflow_registered_col,
+            barmode="group",
+            title="Registered Students by Programme and Workflow Status"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Registered Student Table")
+    st.dataframe(registered_f, use_container_width=True)
 
 
 # =========================================================
