@@ -1,4 +1,3 @@
-import math
 import textwrap
 from io import BytesIO
 
@@ -124,6 +123,10 @@ def prepare_dataframes(data_dict):
     supervisor_students = clean_text_columns(standardize_columns(data_dict["supervisor_students"]))
     examiner_detail = clean_text_columns(standardize_columns(data_dict["examiner_detail"]))
 
+    for col in ["Days in System", "Months in System", "Years in System"]:
+        if col in registered.columns:
+            registered[col] = pd.to_numeric(registered[col], errors="coerce")
+
     if "Completion Year" in graduated.columns:
         graduated["Completion Year"] = clean_completion_year(graduated["Completion Year"])
     elif "Completion Date" in graduated.columns:
@@ -198,7 +201,10 @@ def dataframe_preview_table(df, max_rows=15, max_cols=8, max_cell_len=28):
         preview = preview.iloc[:, :max_cols].copy()
 
     preview = preview.fillna("")
-    preview.columns = [textwrap.shorten(str(c), width=max_cell_len, placeholder="...") for c in preview.columns]
+    preview.columns = [
+        textwrap.shorten(str(c), width=max_cell_len, placeholder="...")
+        for c in preview.columns
+    ]
 
     for col in preview.columns:
         preview[col] = preview[col].astype(str).apply(
@@ -301,6 +307,7 @@ def build_pdf_report(
         ["Registered Students", f"{len(registered_f):,}"],
         ["Graduated Students", f"{len(graduated_f):,}"],
     ]
+
     story.append(Paragraph("Overview Metrics", styles["Heading2"]))
     story.append(Spacer(1, 0.1 * inch))
     story.append(styled_report_table(summary_data, col_widths=[3.2 * inch, 1.2 * inch]))
@@ -327,88 +334,6 @@ def build_pdf_report(
             )
             fig.update_xaxes(type="category")
             add_chart(story, "Overview: Number of Students Graduated by Year", fig, styles)
-
-    if workflow_col and "Programme" in preprocess_f.columns:
-        pp_programme_workflow = (
-            preprocess_f.groupby(["Programme", workflow_col])
-            .size()
-            .reset_index(name="Students")
-        )
-        if not pp_programme_workflow.empty:
-            charts_made = True
-            fig = px.bar(
-                pp_programme_workflow,
-                x="Programme",
-                y="Students",
-                color=workflow_col,
-                barmode="group",
-                title="Pre-process Students by Programme and Workflow Status",
-            )
-            add_chart(story, "Pre-process: Programme by Workflow Status", fig, styles)
-
-    if "Supervisor" in supervisor_students_f.columns and "Programme" in supervisor_students_f.columns:
-        total_chart = (
-            supervisor_students_f.groupby(["Supervisor", "Programme"])
-            .size()
-            .reset_index(name="Students")
-        )
-        if not total_chart.empty:
-            charts_made = True
-            fig_total = px.bar(
-                total_chart,
-                x="Supervisor",
-                y="Students",
-                color="Programme",
-                color_discrete_map=programme_color_map,
-                barmode="stack",
-                title="Total Students per Supervisor by Programme",
-            )
-            add_chart(story, "Supervisors: Total Students by Programme", fig_total, styles)
-
-    if examiner_name_col and "Student Status Group" in examiner_detail_f.columns and "Programme" in examiner_detail_f.columns:
-        ex_current = examiner_detail_f[
-            examiner_detail_f["Student Status Group"] == "Currently in system"
-        ].copy()
-
-        ex_grad = examiner_detail_f[
-            examiner_detail_f["Student Status Group"] == "Graduated"
-        ].copy()
-
-        if not ex_current.empty:
-            charts_made = True
-            ex_current_chart = (
-                ex_current.groupby([examiner_name_col, "Programme"])
-                .size()
-                .reset_index(name="Students")
-            )
-            fig = px.bar(
-                ex_current_chart,
-                x=examiner_name_col,
-                y="Students",
-                color="Programme",
-                color_discrete_map=programme_color_map,
-                barmode="stack",
-                title="Current Students per External Examiner by Programme",
-            )
-            add_chart(story, "External Examiners: Current Students by Programme", fig, styles)
-
-        if not ex_grad.empty:
-            charts_made = True
-            ex_grad_chart = (
-                ex_grad.groupby([examiner_name_col, "Programme"])
-                .size()
-                .reset_index(name="Students")
-            )
-            fig = px.bar(
-                ex_grad_chart,
-                x=examiner_name_col,
-                y="Students",
-                color="Programme",
-                color_discrete_map=programme_color_map,
-                barmode="stack",
-                title="Graduated Students per External Examiner by Programme",
-            )
-            add_chart(story, "External Examiners: Graduated Students by Programme", fig, styles)
 
     if charts_made:
         story.append(PageBreak())
@@ -688,13 +613,13 @@ with tab3:
             y="Students",
             color="Programme",
             color_discrete_map=PROGRAMME_COLOR_MAP,
-            title="Registered Students by Programme"
+            title="Registered Students by Programme",
         )
         st.plotly_chart(fig, use_container_width=True)
 
     workflow_registered_col = find_matching_column(
         registered_f,
-        ["Workflow Decision Status", "Workflow Status", "Workflow State", "Status", "Decision Status"]
+        ["Workflow Decision Status", "Workflow Status", "Workflow State", "Status", "Decision Status"],
     )
 
     if workflow_registered_col and "Programme" in registered_f.columns:
@@ -710,9 +635,33 @@ with tab3:
             y="Students",
             color=workflow_registered_col,
             barmode="group",
-            title="Registered Students by Programme and Workflow Status"
+            title="Registered Students by Programme and Workflow Status",
         )
         st.plotly_chart(fig, use_container_width=True)
+
+    if "Years in System" in registered_f.columns and "Programme" in registered_f.columns:
+        years_df = registered_f.dropna(subset=["Years in System"]).copy()
+
+        if not years_df.empty:
+            fig = px.histogram(
+                years_df,
+                x="Years in System",
+                color="Programme",
+                color_discrete_map=PROGRAMME_COLOR_MAP,
+                nbins=12,
+                title="Registered Students: Years in System by Programme",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            avg_time = (
+                years_df.groupby("Programme")["Years in System"]
+                .mean()
+                .reset_index(name="Average Years in System")
+                .sort_values("Average Years in System", ascending=False)
+            )
+
+            st.markdown("### Average Years in System by Programme")
+            st.dataframe(avg_time, use_container_width=True)
 
     st.markdown("### Registered Student Table")
     st.dataframe(registered_f, use_container_width=True)
