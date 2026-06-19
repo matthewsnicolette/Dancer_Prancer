@@ -75,20 +75,46 @@ def normalize_role(role_value):
     return str(role_value).title()
 
 
-def safe_value_counts(df: pd.DataFrame, col: str, dropna_label: str = "Unknown") -> pd.DataFrame:
-    temp = df.copy()
-    temp[col] = temp[col].fillna(dropna_label)
-    out = temp[col].value_counts().reset_index()
-    out.columns = [col, "Count"]
-    return out
-
-
 def find_matching_column(df: pd.DataFrame, possibilities):
     lower_map = {c.lower(): c for c in df.columns}
     for item in possibilities:
         if item.lower() in lower_map:
             return lower_map[item.lower()]
     return None
+
+
+def safe_columns(df: pd.DataFrame, columns):
+    return [col for col in columns if col in df.columns]
+
+
+def add_status_group_if_missing(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    if "Student Status Group" not in df.columns:
+        if "Student Stage" in df.columns:
+            stage = df["Student Stage"].astype(str).str.strip().str.lower()
+            df["Student Status Group"] = np.where(
+                stage == "graduated",
+                "Graduated",
+                "Currently in system",
+            )
+        else:
+            df["Student Status Group"] = "Unknown"
+
+    if "Status Detail" not in df.columns:
+        if "Programme" in df.columns and "Completion Year" in df.columns:
+            df["Status Detail"] = df.apply(
+                lambda row: (
+                    f"Graduated {row.get('Programme', '')} {row.get('Completion Year', '')}"
+                    if row.get("Student Status Group") == "Graduated"
+                    else f"Currently in system - {row.get('Programme', '')}"
+                ),
+                axis=1,
+            )
+        else:
+            df["Status Detail"] = df["Student Status Group"]
+
+    return df
 
 
 def prepare_dataframes(data_dict):
@@ -119,6 +145,9 @@ def prepare_dataframes(data_dict):
     if "Examiner Role" in examiner_detail.columns:
         examiner_detail["Normalized Examiner Role"] = examiner_detail["Examiner Role"].apply(normalize_role)
 
+    supervisor_students = add_status_group_if_missing(supervisor_students)
+    examiner_detail = add_status_group_if_missing(examiner_detail)
+
     return preprocess, registered, graduated, supervisor_students, examiner_detail
 
 
@@ -140,10 +169,6 @@ def load_all_data(preprocess_file, registered_file, graduated_file, supervisor_f
 
 
 def figure_to_rl_image(fig, width=9.8 * inch, height=5.3 * inch):
-    """
-    Try to convert a Plotly figure to an image for PDF embedding.
-    If Kaleido/Chrome is unavailable on Streamlit Cloud, return None.
-    """
     try:
         img_bytes = fig.to_image(format="png", scale=2)
         img_buffer = BytesIO(img_bytes)
@@ -169,7 +194,6 @@ def dataframe_preview_table(df, max_rows=15, max_cols=8, max_cell_len=28):
 
     preview = df.head(max_rows).copy()
 
-    # Limit very wide tables
     if preview.shape[1] > max_cols:
         preview = preview.iloc[:, :max_cols].copy()
 
@@ -261,7 +285,6 @@ def build_pdf_report(
 
     story = []
 
-    # Cover / intro
     story.append(Paragraph("Postgraduate Student Dashboard Report", styles["Title"]))
     story.append(Spacer(1, 0.15 * inch))
     story.append(
@@ -283,7 +306,6 @@ def build_pdf_report(
     story.append(styled_report_table(summary_data, col_widths=[3.2 * inch, 1.2 * inch]))
     story.append(Spacer(1, 0.25 * inch))
 
-    # Charts used in app
     charts_made = False
 
     if "Completion Year" in graduated_f.columns:
@@ -324,50 +346,6 @@ def build_pdf_report(
             )
             add_chart(story, "Pre-process: Programme by Workflow Status", fig, styles)
 
-    if workflow_col and assigned_supervisor_col and "Programme" in preprocess_f.columns:
-        pp_supervisor = preprocess_f.dropna(subset=[workflow_col]).copy()
-        if not pp_supervisor.empty:
-            charts_made = True
-            pp_supervisor[assigned_supervisor_col] = pp_supervisor[assigned_supervisor_col].fillna("Unassigned")
-            pp_sup_programme = (
-                pp_supervisor.groupby([assigned_supervisor_col, "Programme"])
-                .size()
-                .reset_index(name="Students")
-            )
-            fig = px.bar(
-                pp_sup_programme,
-                x=assigned_supervisor_col,
-                y="Students",
-                color="Programme",
-                color_discrete_map=programme_color_map,
-                barmode="stack",
-                title="Allocated Supervisors by Programme",
-            )
-            add_chart(story, "Pre-process: Allocated Supervisors by Programme", fig, styles)
-
-    if "Completion Year" in graduated_f.columns and "Programme" in graduated_f.columns:
-        grad_chart = graduated_f.dropna(subset=["Completion Year"]).copy()
-        if not grad_chart.empty:
-            charts_made = True
-            grad_chart["Completion Year"] = grad_chart["Completion Year"].astype(int)
-            grad_by_year_programme = (
-                grad_chart.groupby(["Completion Year", "Programme"])
-                .size()
-                .reset_index(name="Students")
-                .sort_values("Completion Year")
-            )
-            fig = px.bar(
-                grad_by_year_programme,
-                x="Completion Year",
-                y="Students",
-                color="Programme",
-                color_discrete_map=programme_color_map,
-                barmode="stack",
-                title="Graduated Students by Year and Programme",
-            )
-            fig.update_xaxes(type="category")
-            add_chart(story, "Graduated: Students by Year and Programme", fig, styles)
-
     if "Supervisor" in supervisor_students_f.columns and "Programme" in supervisor_students_f.columns:
         total_chart = (
             supervisor_students_f.groupby(["Supervisor", "Programme"])
@@ -387,58 +365,37 @@ def build_pdf_report(
             )
             add_chart(story, "Supervisors: Total Students by Programme", fig_total, styles)
 
-        if "Normalized Role" in supervisor_students_f.columns:
-            main_df = supervisor_students_f[
-                supervisor_students_f["Normalized Role"] == "Primary"
-            ].copy()
-            if not main_df.empty:
-                charts_made = True
-                main_chart = (
-                    main_df.groupby(["Supervisor", "Programme"])
-                    .size()
-                    .reset_index(name="Students")
-                )
-                fig_main = px.bar(
-                    main_chart,
-                    x="Supervisor",
-                    y="Students",
-                    color="Programme",
-                    color_discrete_map=programme_color_map,
-                    barmode="stack",
-                    title="Main Supervisor Students by Programme",
-                )
-                add_chart(story, "Supervisors: Main Supervisor Students by Programme", fig_main, styles)
+    if examiner_name_col and "Student Status Group" in examiner_detail_f.columns and "Programme" in examiner_detail_f.columns:
+        ex_current = examiner_detail_f[
+            examiner_detail_f["Student Status Group"] == "Currently in system"
+        ].copy()
 
-            co_df = supervisor_students_f[
-                supervisor_students_f["Normalized Role"] == "Co-supervisor"
-            ].copy()
-            if not co_df.empty:
-                charts_made = True
-                co_chart = (
-                    co_df.groupby(["Supervisor", "Programme"])
-                    .size()
-                    .reset_index(name="Students")
-                )
-                fig_co = px.bar(
-                    co_chart,
-                    x="Supervisor",
-                    y="Students",
-                    color="Programme",
-                    color_discrete_map=programme_color_map,
-                    barmode="stack",
-                    title="Secondary / Co-supervisor Students by Programme",
-                )
-                add_chart(story, "Supervisors: Secondary / Co-supervisor Students by Programme", fig_co, styles)
+        ex_grad = examiner_detail_f[
+            examiner_detail_f["Student Status Group"] == "Graduated"
+        ].copy()
 
-    if examiner_name_col and "Student Stage" in examiner_detail_f.columns and "Programme" in examiner_detail_f.columns:
-        ex_stage = examiner_detail_f.copy()
-        ex_stage["Student Stage"] = ex_stage["Student Stage"].astype(str).str.strip().str.lower()
+        if not ex_current.empty:
+            charts_made = True
+            ex_current_chart = (
+                ex_current.groupby([examiner_name_col, "Programme"])
+                .size()
+                .reset_index(name="Students")
+            )
+            fig = px.bar(
+                ex_current_chart,
+                x=examiner_name_col,
+                y="Students",
+                color="Programme",
+                color_discrete_map=programme_color_map,
+                barmode="stack",
+                title="Current Students per External Examiner by Programme",
+            )
+            add_chart(story, "External Examiners: Current Students by Programme", fig, styles)
 
-        ex_graduated = ex_stage[ex_stage["Student Stage"] == "graduated"].copy()
-        if not ex_graduated.empty:
+        if not ex_grad.empty:
             charts_made = True
             ex_grad_chart = (
-                ex_graduated.groupby([examiner_name_col, "Programme"])
+                ex_grad.groupby([examiner_name_col, "Programme"])
                 .size()
                 .reset_index(name="Students")
             )
@@ -452,25 +409,6 @@ def build_pdf_report(
                 title="Graduated Students per External Examiner by Programme",
             )
             add_chart(story, "External Examiners: Graduated Students by Programme", fig, styles)
-
-        ex_registered = ex_stage[ex_stage["Student Stage"] == "registered"].copy()
-        if not ex_registered.empty:
-            charts_made = True
-            ex_reg_chart = (
-                ex_registered.groupby([examiner_name_col, "Programme"])
-                .size()
-                .reset_index(name="Students")
-            )
-            fig = px.bar(
-                ex_reg_chart,
-                x=examiner_name_col,
-                y="Students",
-                color="Programme",
-                color_discrete_map=programme_color_map,
-                barmode="stack",
-                title="Registered Students per External Examiner by Programme",
-            )
-            add_chart(story, "External Examiners: Registered Students by Programme", fig, styles)
 
     if charts_made:
         story.append(PageBreak())
@@ -515,38 +453,13 @@ st.write("Upload or drag and drop the five Excel files below.")
 col1, col2 = st.columns(2)
 
 with col1:
-    preprocess_file = st.file_uploader(
-        "Pre-process students",
-        type="xlsx",
-        key="preprocess_file",
-        help="Upload preprocess_students.xlsx",
-    )
-    registered_file = st.file_uploader(
-        "Registered students",
-        type="xlsx",
-        key="registered_file",
-        help="Upload registered_students.xlsx",
-    )
-    graduated_file = st.file_uploader(
-        "Graduated students",
-        type="xlsx",
-        key="graduated_file",
-        help="Upload graduated_students.xlsx",
-    )
+    preprocess_file = st.file_uploader("Pre-process students", type="xlsx", key="preprocess_file")
+    registered_file = st.file_uploader("Registered students", type="xlsx", key="registered_file")
+    graduated_file = st.file_uploader("Graduated students", type="xlsx", key="graduated_file")
 
 with col2:
-    supervisor_file = st.file_uploader(
-        "Supervisor student report",
-        type="xlsx",
-        key="supervisor_file",
-        help="Upload supervisor_student_report.xlsx",
-    )
-    examiner_file = st.file_uploader(
-        "External examiner report",
-        type="xlsx",
-        key="examiner_file",
-        help="Upload external_examiner_report.xlsx",
-    )
+    supervisor_file = st.file_uploader("Supervisor student report", type="xlsx", key="supervisor_file")
+    examiner_file = st.file_uploader("External examiner report", type="xlsx", key="examiner_file")
 
 all_files_uploaded = all(
     [
@@ -860,46 +773,97 @@ with tab5:
         )
         st.plotly_chart(fig_total, use_container_width=True)
 
-        if "Normalized Role" in supervisor_students_f.columns:
-            main_df = supervisor_students_f[
-                supervisor_students_f["Normalized Role"] == "Primary"
-            ].copy()
-            if not main_df.empty:
-                main_chart = (
-                    main_df.groupby(["Supervisor", "Programme"])
-                    .size()
-                    .reset_index(name="Students")
-                )
-                fig_main = px.bar(
-                    main_chart,
-                    x="Supervisor",
-                    y="Students",
-                    color="Programme",
-                    color_discrete_map=PROGRAMME_COLOR_MAP,
-                    barmode="stack",
-                    title="Main Supervisor Students by Programme",
-                )
-                st.plotly_chart(fig_main, use_container_width=True)
+        st.markdown("### Individual Supervisor Profile")
 
-            co_df = supervisor_students_f[
-                supervisor_students_f["Normalized Role"] == "Co-supervisor"
+        supervisor_options = sorted(supervisor_students_f["Supervisor"].dropna().unique())
+
+        if supervisor_options:
+            selected_supervisor = st.selectbox(
+                "Select supervisor",
+                supervisor_options,
+                key="selected_supervisor_profile",
+            )
+
+            supervisor_profile = supervisor_students_f[
+                supervisor_students_f["Supervisor"] == selected_supervisor
             ].copy()
-            if not co_df.empty:
-                co_chart = (
-                    co_df.groupby(["Supervisor", "Programme"])
-                    .size()
-                    .reset_index(name="Students")
+
+            st.subheader(selected_supervisor)
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(
+                "Currently in system",
+                int((supervisor_profile["Student Status Group"] == "Currently in system").sum())
+                if "Student Status Group" in supervisor_profile.columns else 0,
+            )
+            c2.metric(
+                "Graduated students",
+                int((supervisor_profile["Student Status Group"] == "Graduated").sum())
+                if "Student Status Group" in supervisor_profile.columns else 0,
+            )
+            c3.metric(
+                "Primary students",
+                int((supervisor_profile["Normalized Role"] == "Primary").sum())
+                if "Normalized Role" in supervisor_profile.columns else 0,
+            )
+            c4.metric("Total students", len(supervisor_profile))
+
+            if "Student Status Group" in supervisor_profile.columns:
+                current_students = supervisor_profile[
+                    supervisor_profile["Student Status Group"] == "Currently in system"
+                ]
+                graduated_students = supervisor_profile[
+                    supervisor_profile["Student Status Group"] == "Graduated"
+                ]
+
+                st.markdown("#### Current students")
+                st.dataframe(
+                    current_students[
+                        safe_columns(
+                            current_students,
+                            [
+                                "Student Number",
+                                "Student Name",
+                                "Programme",
+                                "Research Title",
+                                "Role",
+                                "Status Detail",
+                            ],
+                        )
+                    ],
+                    use_container_width=True,
                 )
-                fig_co = px.bar(
-                    co_chart,
-                    x="Supervisor",
-                    y="Students",
-                    color="Programme",
-                    color_discrete_map=PROGRAMME_COLOR_MAP,
-                    barmode="stack",
-                    title="Secondary / Co-supervisor Students by Programme",
+
+                st.markdown("#### Graduated students supervised")
+                st.dataframe(
+                    graduated_students[
+                        safe_columns(
+                            graduated_students,
+                            [
+                                "Student Number",
+                                "Student Name",
+                                "Programme",
+                                "Research Title",
+                                "Completion Year",
+                                "Role",
+                                "Status Detail",
+                            ],
+                        )
+                    ],
+                    use_container_width=True,
                 )
-                st.plotly_chart(fig_co, use_container_width=True)
+
+                if "Completion Year" in graduated_students.columns and not graduated_students.empty:
+                    st.markdown("#### Graduated students by year and programme")
+                    sup_grad_year = (
+                        graduated_students
+                        .dropna(subset=["Completion Year"])
+                        .groupby(["Completion Year", "Programme"])
+                        .size()
+                        .reset_index(name="Students")
+                        .sort_values("Completion Year")
+                    )
+                    st.dataframe(sup_grad_year, use_container_width=True)
 
     st.markdown("### Supervisor Detail")
     st.dataframe(supervisor_students_f, use_container_width=True)
@@ -911,11 +875,37 @@ with tab5:
 with tab6:
     st.subheader("External Examiners")
 
-    if examiner_name_col and "Student Stage" in examiner_detail_f.columns and "Programme" in examiner_detail_f.columns:
-        ex_stage = examiner_detail_f.copy()
-        ex_stage["Student Stage"] = ex_stage["Student Stage"].astype(str).str.strip().str.lower()
+    if examiner_name_col and "Programme" in examiner_detail_f.columns:
+        if "Student Status Group" in examiner_detail_f.columns:
+            ex_current = examiner_detail_f[
+                examiner_detail_f["Student Status Group"] == "Currently in system"
+            ].copy()
+            ex_graduated = examiner_detail_f[
+                examiner_detail_f["Student Status Group"] == "Graduated"
+            ].copy()
+        else:
+            ex_stage = examiner_detail_f.copy()
+            ex_stage["Student Stage"] = ex_stage["Student Stage"].astype(str).str.strip().str.lower()
+            ex_current = ex_stage[ex_stage["Student Stage"] == "registered"].copy()
+            ex_graduated = ex_stage[ex_stage["Student Stage"] == "graduated"].copy()
 
-        ex_graduated = ex_stage[ex_stage["Student Stage"] == "graduated"].copy()
+        if not ex_current.empty:
+            ex_current_chart = (
+                ex_current.groupby([examiner_name_col, "Programme"])
+                .size()
+                .reset_index(name="Students")
+            )
+            fig = px.bar(
+                ex_current_chart,
+                x=examiner_name_col,
+                y="Students",
+                color="Programme",
+                color_discrete_map=PROGRAMME_COLOR_MAP,
+                barmode="stack",
+                title="Current Students per External Examiner by Programme",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
         if not ex_graduated.empty:
             ex_grad_chart = (
                 ex_graduated.groupby([examiner_name_col, "Programme"])
@@ -933,23 +923,92 @@ with tab6:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        ex_registered = ex_stage[ex_stage["Student Stage"] == "registered"].copy()
-        if not ex_registered.empty:
-            ex_reg_chart = (
-                ex_registered.groupby([examiner_name_col, "Programme"])
-                .size()
-                .reset_index(name="Students")
+        st.markdown("### Individual External Examiner Profile")
+
+        examiner_options = sorted(examiner_detail_f[examiner_name_col].dropna().unique())
+
+        if examiner_options:
+            selected_examiner = st.selectbox(
+                "Select external examiner",
+                examiner_options,
+                key="selected_examiner_profile",
             )
-            fig = px.bar(
-                ex_reg_chart,
-                x=examiner_name_col,
-                y="Students",
-                color="Programme",
-                color_discrete_map=PROGRAMME_COLOR_MAP,
-                barmode="stack",
-                title="Registered Students per External Examiner by Programme",
+
+            examiner_profile = examiner_detail_f[
+                examiner_detail_f[examiner_name_col] == selected_examiner
+            ].copy()
+
+            st.subheader(selected_examiner)
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric(
+                "Currently in system",
+                int((examiner_profile["Student Status Group"] == "Currently in system").sum())
+                if "Student Status Group" in examiner_profile.columns else 0,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            c2.metric(
+                "Graduated students",
+                int((examiner_profile["Student Status Group"] == "Graduated").sum())
+                if "Student Status Group" in examiner_profile.columns else 0,
+            )
+            c3.metric("Total students examined", len(examiner_profile))
+
+            if "Student Status Group" in examiner_profile.columns:
+                current_examiner_students = examiner_profile[
+                    examiner_profile["Student Status Group"] == "Currently in system"
+                ]
+                graduated_examiner_students = examiner_profile[
+                    examiner_profile["Student Status Group"] == "Graduated"
+                ]
+
+                st.markdown("#### Current students")
+                st.dataframe(
+                    current_examiner_students[
+                        safe_columns(
+                            current_examiner_students,
+                            [
+                                "Student Number",
+                                "Student Name",
+                                "Programme",
+                                "Research Title",
+                                "Examiner Role",
+                                "Status Detail",
+                            ],
+                        )
+                    ],
+                    use_container_width=True,
+                )
+
+                st.markdown("#### Graduated students examined")
+                st.dataframe(
+                    graduated_examiner_students[
+                        safe_columns(
+                            graduated_examiner_students,
+                            [
+                                "Student Number",
+                                "Student Name",
+                                "Programme",
+                                "Research Title",
+                                "Completion Year",
+                                "Examiner Role",
+                                "Status Detail",
+                            ],
+                        )
+                    ],
+                    use_container_width=True,
+                )
+
+                if "Completion Year" in graduated_examiner_students.columns and not graduated_examiner_students.empty:
+                    st.markdown("#### Graduated students by year and programme")
+                    examiner_grad_year = (
+                        graduated_examiner_students
+                        .dropna(subset=["Completion Year"])
+                        .groupby(["Completion Year", "Programme"])
+                        .size()
+                        .reset_index(name="Students")
+                        .sort_values("Completion Year")
+                    )
+                    st.dataframe(examiner_grad_year, use_container_width=True)
 
     st.markdown("### External Examiner Detail")
     st.dataframe(examiner_detail_f, use_container_width=True)
