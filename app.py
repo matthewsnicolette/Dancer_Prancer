@@ -639,30 +639,6 @@ with tab3:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    if "Years in System" in registered_f.columns and "Programme" in registered_f.columns:
-        years_df = registered_f.dropna(subset=["Years in System"]).copy()
-
-        if not years_df.empty:
-            fig = px.histogram(
-                years_df,
-                x="Years in System",
-                color="Programme",
-                color_discrete_map=PROGRAMME_COLOR_MAP,
-                nbins=12,
-                title="Registered Students: Years in System by Programme",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            avg_time = (
-                years_df.groupby("Programme")["Years in System"]
-                .mean()
-                .reset_index(name="Average Years in System")
-                .sort_values("Average Years in System", ascending=False)
-            )
-
-            st.markdown("### Average Years in System by Programme")
-            st.dataframe(avg_time, use_container_width=True)
-
     st.markdown("### Registered Student Table")
     st.dataframe(registered_f, use_container_width=True)
 
